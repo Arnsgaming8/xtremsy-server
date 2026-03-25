@@ -156,7 +156,7 @@ app.get('/api/rooms/:roomId/files', (req, res) => {
     res.json({ files });
 });
 
-// Download file - redirect to 0x0.st
+// Download file - proxy from 0x0.st to avoid redirect issues
 app.get('/api/rooms/:roomId/files/:fileId', (req, res) => {
     const { roomId, fileId } = req.params;
     const roomFiles = fileMetadata.get(roomId);
@@ -170,8 +170,14 @@ app.get('/api/rooms/:roomId/files/:fileId', (req, res) => {
         return res.status(404).json({ error: 'File not found' });
     }
 
-    // Redirect to 0x0.st download link
-    res.redirect(file.link);
+    // Fetch from 0x0.st and stream to client
+    https.get(file.link, (fileRes) => {
+        res.setHeader('Content-Type', file.type);
+        res.setHeader('Content-Disposition', `inline; filename="${file.name}"`);
+        fileRes.pipe(res);
+    }).on('error', (e) => {
+        res.status(500).json({ error: 'Failed to download file' });
+    });
 });
 
 // Delete file (just removes from our metadata - file stays on 0x0.st)
