@@ -2,10 +2,10 @@
   "name": "xtremsy-server",
   "version": "1.0.0",
   "description": "Xtremsy Files Server - Unlimited file storage",
-  "main": "server.js",
+  "main": "server-free.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node server-free.js",
+    "dev": "node server-free.js"
   },
   "dependencies": {
     "express": "^4.18.2",

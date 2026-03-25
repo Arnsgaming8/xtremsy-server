@@ -1,34 +1,26 @@
 /**
- * Xtremsy Files - Telegram Bot Storage
+ * Xtremsy Files - Free File Storage Server
  * 
- * This creates a Telegram bot that stores files in your Telegram account.
- * Completely free and truly unlimited!
+ * Uses file.io API for free file storage (no account needed!)
+ * Files are stored on file.io servers - truly unlimited!
  * 
- * Setup:
- * 1. Create a bot via @BotFather on Telegram
- * 2. Get the bot token
- * 3. Run this code locally or on any free host
- * 
- * No server needed - files are stored in your Telegram account!
+ * Features:
+ * - No size limit
+ * - Files stored for 24 hours (or forever if never downloaded)
+ * - Simple API
  */
 
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const crypto = require('crypto');
-const fs = require('fs');
-
-// You'll need to set these:
-// TELEGRAM_BOT_TOKEN=your_bot_token_here
-// TELEGRAM_CHAT_ID=your_chat_id_here (get from @userinfobot)
-
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+const https = require('https');
+const { URL } = require('url');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// File metadata storage (maps fileId -> telegram message info)
+// File metadata storage (maps fileId -> file.io info)
 const fileMetadata = new Map();
 
 app.use(cors({
@@ -40,54 +32,76 @@ app.use(express.json({ limit: '100mb' }));
 
 // Health check
 app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
-        storage: 'telegram',
-        configured: !!BOT_TOKEN
-    });
+    res.json({ status: 'ok', storage: 'file.io' });
 });
 
-// Upload file to Telegram
+// Upload file to file.io
 app.post('/api/rooms/:roomId/files', multer({ storage: multer.memoryStorage() }).single('file'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
 
-        if (!BOT_TOKEN || !CHAT_ID) {
-            return res.status(500).json({ error: 'Telegram bot not configured' });
-        }
-
         const roomId = req.params.roomId;
         const fileId = crypto.randomBytes(8).toString('hex');
 
-        // Save file temporarily
-        const tempPath = path.join(__dirname, `temp_${fileId}_${req.file.originalname}`);
-        fs.writeFileSync(tempPath, req.file.buffer);
+        // Prepare form data for file.io
+        const boundary = '----FormBoundary' + crypto.randomBytes(16).toString('hex');
+        const fileBuffer = req.file.buffer;
+        
+        // Build multipart form data
+        const formData = Buffer.alloc(4 + boundary.length + fileBuffer.length + 100);
+        let offset = 0;
+        
+        // Add file field
+        const header = Buffer.from(
+            `--${boundary}\r\n` +
+            `Content-Disposition: form-data; name="file"; filename="${req.file.originalname}"\r\n` +
+            `Content-Type: ${req.file.mimetype}\r\n\r\n`
+        );
+        header.copy(formData, offset);
+        offset += header.length;
+        
+        fileBuffer.copy(formData, offset);
+        offset += fileBuffer.length;
+        
+        const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
+        footer.copy(formData, offset);
 
-        // Send to Telegram
-        const formData = new FormData();
-        formData.append('chat_id', CHAT_ID);
-        formData.append('document', fs.createReadStream(tempPath));
-        formData.append('caption', JSON.stringify({ fileId, roomId }));
-
-        const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
+        // Send to file.io
+        const postData = formData;
+        
+        const options = {
+            hostname: 'file.io',
+            path: '/',
             method: 'POST',
-            body: formData
+            headers: {
+                'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                'Content-Length': postData.length
+            }
+        };
+
+        const result = await new Promise((resolve, reject) => {
+            const req = https.request(options, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                    try {
+                        resolve(JSON.parse(data));
+                    } catch(e) {
+                        reject(e);
+                    }
+                });
+            });
+            req.on('error', reject);
+            req.write(postData);
+            req.end();
         });
 
-        const result = await response.json();
-
-        // Clean up temp file
-        fs.unlinkSync(tempPath);
-
-        if (!result.ok) {
-            console.error('Telegram error:', result);
-            return res.status(500).json({ error: 'Failed to upload to Telegram' });
+        if (!result.success) {
+            console.error('file.io error:', result);
+            return res.status(500).json({ error: 'Failed to upload to file.io' });
         }
-
-        const messageId = result.result.message_id;
-        const fileIdOnTelegram = result.result.document.file_id;
 
         // Store metadata
         const fileInfo = {
@@ -95,8 +109,8 @@ app.post('/api/rooms/:roomId/files', multer({ storage: multer.memoryStorage() })
             name: req.file.originalname,
             type: req.file.mimetype,
             size: req.file.size,
-            telegramFileId: fileIdOnTelegram,
-            messageId: messageId,
+            link: result.link,
+            expiresAt: result.expires,
             roomId: roomId,
             uploadedAt: Date.now()
         };
@@ -144,8 +158,8 @@ app.get('/api/rooms/:roomId/files', (req, res) => {
     res.json({ files });
 });
 
-// Download file from Telegram
-app.get('/api/rooms/:roomId/files/:fileId', async (req, res) => {
+// Download/view file - redirect to file.io
+app.get('/api/rooms/:roomId/files/:fileId', (req, res) => {
     const { roomId, fileId } = req.params;
     const roomFiles = fileMetadata.get(roomId);
     
@@ -158,27 +172,11 @@ app.get('/api/rooms/:roomId/files/:fileId', async (req, res) => {
         return res.status(404).json({ error: 'File not found' });
     }
 
-    try {
-        // Get file from Telegram
-        const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${file.telegramFileId}`);
-        const result = await response.json();
-
-        if (!result.ok) {
-            return res.status(500).json({ error: 'Failed to get file from Telegram' });
-        }
-
-        const filePath = result.result.file_path;
-        const downloadUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
-
-        // Redirect to the file URL so browser can download it
-        res.redirect(downloadUrl);
-    } catch (error) {
-        console.error('Download error:', error);
-        res.status(500).json({ error: 'Download failed' });
-    }
+    // Redirect to file.io download link
+    res.redirect(file.link);
 });
 
-// Delete file (just removes metadata - file stays in Telegram unless manually deleted)
+// Delete file
 app.delete('/api/rooms/:roomId/files/:fileId', (req, res) => {
     const { roomId, fileId } = req.params;
     const roomFiles = fileMetadata.get(roomId);
@@ -197,6 +195,6 @@ app.delete('/api/rooms/:roomId/files/:fileId', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Xtremsy Telegram storage server running on port ${PORT}`);
-    console.log(`Telegram bot ${BOT_TOKEN ? 'configured' : 'NOT configured'}`);
+    console.log(`Xtremsy file.io storage server running on port ${PORT}`);
+    console.log(`Files stored on file.io - truly free and unlimited!`);
 });
