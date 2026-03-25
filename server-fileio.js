@@ -1,13 +1,11 @@
 /**
- * Xtremsy Files - Free File Storage Server
+ * Xtremsy Files - File Storage using file.io
  * 
- * Uses file.io API for free file storage (no account needed!)
- * Files are stored on file.io servers - truly unlimited!
- * 
- * Features:
+ * file.io is a free file hosting service:
+ * - No account needed
  * - No size limit
- * - Files stored for 24 hours (or forever if never downloaded)
- * - Simple API
+ * - Files stored for 24 hours (then deleted)
+ * - Completely free!
  */
 
 const express = require('express');
@@ -15,12 +13,11 @@ const multer = require('multer');
 const cors = require('cors');
 const crypto = require('crypto');
 const https = require('https');
-const { URL } = require('url');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// File metadata storage (maps fileId -> file.io info)
+// File metadata storage
 const fileMetadata = new Map();
 
 app.use(cors({
@@ -28,7 +25,7 @@ app.use(cors({
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type']
 }));
-app.use(express.json({ limit: '100mb' }));
+app.use(express.json({ limit: '500mb' }));
 
 // Health check
 app.get('/health', (req, res) => {
@@ -45,63 +42,17 @@ app.post('/api/rooms/:roomId/files', multer({ storage: multer.memoryStorage() })
         const roomId = req.params.roomId;
         const fileId = crypto.randomBytes(8).toString('hex');
 
-        // Prepare form data for file.io
-        const boundary = '----FormBoundary' + crypto.randomBytes(16).toString('hex');
-        const fileBuffer = req.file.buffer;
-        
-        // Build multipart form data
-        const formData = Buffer.alloc(4 + boundary.length + fileBuffer.length + 100);
-        let offset = 0;
-        
-        // Add file field
-        const header = Buffer.from(
-            `--${boundary}\r\n` +
-            `Content-Disposition: form-data; name="file"; filename="${req.file.originalname}"\r\n` +
-            `Content-Type: ${req.file.mimetype}\r\n\r\n`
-        );
-        header.copy(formData, offset);
-        offset += header.length;
-        
-        fileBuffer.copy(formData, offset);
-        offset += fileBuffer.length;
-        
-        const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
-        footer.copy(formData, offset);
+        console.log(`Uploading ${req.file.originalname} (${req.file.size} bytes) to file.io...`);
 
-        // Send to file.io
-        const postData = formData;
-        
-        const options = {
-            hostname: 'file.io',
-            path: '/',
-            method: 'POST',
-            headers: {
-                'Content-Type': `multipart/form-data; boundary=${boundary}`,
-                'Content-Length': postData.length
-            }
-        };
-
-        const result = await new Promise((resolve, reject) => {
-            const req = https.request(options, (res) => {
-                let data = '';
-                res.on('data', chunk => data += chunk);
-                res.on('end', () => {
-                    try {
-                        resolve(JSON.parse(data));
-                    } catch(e) {
-                        reject(e);
-                    }
-                });
-            });
-            req.on('error', reject);
-            req.write(postData);
-            req.end();
-        });
+        // Upload to file.io
+        const result = await uploadToFileIO(req.file.buffer, req.file.originalname, req.file.mimetype);
 
         if (!result.success) {
             console.error('file.io error:', result);
-            return res.status(500).json({ error: 'Failed to upload to file.io' });
+            return res.status(500).json({ error: 'Failed to upload: ' + (result.error || 'Unknown error') });
         }
+
+        console.log(`Uploaded successfully: ${result.url}`);
 
         // Store metadata
         const fileInfo = {
@@ -109,8 +60,7 @@ app.post('/api/rooms/:roomId/files', multer({ storage: multer.memoryStorage() })
             name: req.file.originalname,
             type: req.file.mimetype,
             size: req.file.size,
-            link: result.link,
-            expiresAt: result.expires,
+            link: result.url,
             roomId: roomId,
             uploadedAt: Date.now()
         };
@@ -137,6 +87,57 @@ app.post('/api/rooms/:roomId/files', multer({ storage: multer.memoryStorage() })
     }
 });
 
+// Upload to file.io
+function uploadToFileIO(buffer, filename, mimetype) {
+    return new Promise((resolve) => {
+        const boundary = '----FormBoundary' + crypto.randomBytes(16).toString('hex');
+        
+        const header = Buffer.from(
+            `--${boundary}\r\n` +
+            `Content-Disposition: form-data; name="file\"; filename="${filename}"\r\n` +
+            `Content-Type: ${mimetype}\r\n\r\n`
+        );
+        
+        const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
+        
+        const postData = Buffer.concat([header, buffer, footer]);
+        
+        const options = {
+            hostname: 'file.io',
+            path: '/',
+            method: 'POST',
+            headers: {
+                'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                'Content-Length': postData.length
+            }
+        };
+
+        const req = https.request(options, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try {
+                    const json = JSON.parse(data);
+                    if (json.success && json.link) {
+                        resolve({ success: true, url: json.link });
+                    } else {
+                        resolve({ success: false, error: json.message || 'Upload failed' });
+                    }
+                } catch(e) {
+                    resolve({ success: false, error: data });
+                }
+            });
+        });
+        
+        req.on('error', (e) => {
+            resolve({ success: false, error: e.message });
+        });
+        
+        req.write(postData);
+        req.end();
+    });
+}
+
 // Get files for a room
 app.get('/api/rooms/:roomId/files', (req, res) => {
     const roomId = req.params.roomId;
@@ -158,7 +159,7 @@ app.get('/api/rooms/:roomId/files', (req, res) => {
     res.json({ files });
 });
 
-// Download/view file - redirect to file.io
+// Download file - proxy from file.io
 app.get('/api/rooms/:roomId/files/:fileId', (req, res) => {
     const { roomId, fileId } = req.params;
     const roomFiles = fileMetadata.get(roomId);
@@ -172,8 +173,14 @@ app.get('/api/rooms/:roomId/files/:fileId', (req, res) => {
         return res.status(404).json({ error: 'File not found' });
     }
 
-    // Redirect to file.io download link
-    res.redirect(file.link);
+    // Fetch from file.io and stream to client
+    https.get(file.link, (fileRes) => {
+        res.setHeader('Content-Type', file.type);
+        res.setHeader('Content-Disposition', `inline; filename="${file.name}"`);
+        fileRes.pipe(res);
+    }).on('error', (e) => {
+        res.status(500).json({ error: 'Failed to download file' });
+    });
 });
 
 // Delete file
@@ -195,6 +202,6 @@ app.delete('/api/rooms/:roomId/files/:fileId', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Xtremsy file.io storage server running on port ${PORT}`);
-    console.log(`Files stored on file.io - truly free and unlimited!`);
+    console.log(`Xtremsy file storage server running on port ${PORT}`);
+    console.log(`Using file.io - FREE storage!`);
 });

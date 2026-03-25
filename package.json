@@ -2,10 +2,10 @@
   "name": "xtremsy-server",
   "version": "1.0.0",
   "description": "Xtremsy Files Server - Unlimited file storage",
-  "main": "server-local.js",
+  "main": "server-fileio.js",
   "scripts": {
-    "start": "node server-local.js",
-    "dev": "node server-local.js"
+    "start": "node server-fileio.js",
+    "dev": "node server-fileio.js"
   },
   "dependencies": {
     "express": "^4.18.2",
