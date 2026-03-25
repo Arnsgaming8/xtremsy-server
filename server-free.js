@@ -1,5 +1,6 @@
 /**
  * Xtremsy Files - Free File Storage Server using 0x0.st
+ * Updated: March 2024
  * 
  * 0x0.st is a free file hosting service with:
  * - No account needed
