@@ -68,7 +68,7 @@ app.post('/api/rooms/:roomId/files', upload.single('file'), (req, res) => {
             type: req.file.mimetype,
             path: req.file.path,
             uploadedAt: Date.now(),
-            expiresAt: Date.now() + (2 * 24 * 60 * 60 * 1000) // 2 days
+            expiresAt: null // Files last forever on server until deleted
         };
 
         // Store metadata
@@ -107,7 +107,7 @@ app.get('/api/rooms/:roomId/files', (req, res) => {
 
     const now = Date.now();
     const files = Array.from(roomFiles.values())
-        .filter(f => f.expiresAt > now)
+        .filter(f => !f.expiresAt || f.expiresAt > now)
         .map(f => ({
             id: f.id,
             name: f.name,
@@ -172,7 +172,8 @@ function cleanupExpiredFiles() {
     const now = Date.now();
     for (const [roomId, roomFiles] of fileMetadata) {
         for (const [fileId, file] of roomFiles) {
-            if (file.expiresAt < now) {
+            // Only delete if expiresAt is set and has passed
+            if (file.expiresAt && file.expiresAt < now) {
                 if (fs.existsSync(file.path)) {
                     fs.unlinkSync(file.path);
                 }
