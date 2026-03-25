@@ -37,7 +37,11 @@ const upload = multer({
     limits: { fileSize: Infinity } // No limit
 });
 
-app.use(cors());
+app.use(cors({
+    origin: '*', // Allow all origins
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type']
+}));
 app.use(express.json());
 app.use('/uploads', express.static(uploadsDir));
 
