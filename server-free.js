@@ -159,17 +159,23 @@ app.get('/api/rooms/:roomId/files', (req, res) => {
 
 // Download file - proxy from 0x0.st to avoid redirect issues
 app.get('/api/rooms/:roomId/files/:fileId', (req, res) => {
+    console.log('Download request for:', req.params.roomId, req.params.fileId);
     const { roomId, fileId } = req.params;
     const roomFiles = fileMetadata.get(roomId);
     
     if (!roomFiles) {
+        console.log('No room files found for room:', roomId);
         return res.status(404).json({ error: 'File not found' });
     }
 
     const file = roomFiles.get(fileId);
     if (!file) {
+        console.log('File not found:', fileId, 'in room:', roomId);
+        console.log('Available files:', Array.from(roomFiles.keys()));
         return res.status(404).json({ error: 'File not found' });
     }
+
+    console.log('Serving file:', file.name, 'from:', file.link);
 
     // Fetch from 0x0.st and stream to client
     https.get(file.link, (fileRes) => {
