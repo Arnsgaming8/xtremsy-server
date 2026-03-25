@@ -45,6 +45,11 @@ app.use(cors({
 app.use(express.json());
 app.use('/uploads', express.static(uploadsDir));
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok' });
+});
+
 // File metadata storage (in memory for now - could use database)
 const fileMetadata = new Map();
 
