@@ -97,6 +97,7 @@ app.post('/api/rooms/:roomId/files', upload.single('file'), (req, res) => {
 
 // Get files for a room
 app.get('/api/rooms/:roomId/files', (req, res) => {
+    console.log('GET /rooms/:roomId/files called with roomId:', req.params.roomId);
     const roomId = req.params.roomId;
     const roomFiles = fileMetadata.get(roomId);
     
